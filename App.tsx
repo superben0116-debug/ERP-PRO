@@ -5,6 +5,8 @@ import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants';
 import Header from './components/Header';
 import Toolbar from './components/Toolbar';
 import PasteModal from './components/PasteModal';
+import SettingsModal from './components/SettingsModal';
+import Login from './components/Login';
 import { evaluateCell, parseAmazonPaste, extractAddressDetails, indexToExcelCol, excelColToIndex, extractInternalModel, parseTSV } from './utils/formulaEvaluator';
 
 const createEmptySheet = (id: string, name: string): SheetData => ({
@@ -16,10 +18,12 @@ const createEmptySheet = (id: string, name: string): SheetData => ({
 });
 
 const App: React.FC = () => {
+  const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
   const [mainSheet, setMainSheet] = useState<SheetData>(() => createEmptySheet('main', '亚马逊订单核算'));
   const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selection, setSelection] = useState<SelectionRange | null>(null);
   const [editingCell, setEditingCell] = useState<GridCell & { initialValue?: string } | null>(null);
   const [history, setHistory] = useState<SheetData[][]>([]);
@@ -153,7 +157,7 @@ const App: React.FC = () => {
   }, [selection, currentColumns.length, updateSheet, saveHistory]);
 
   const handleGlobalKeyDown = useCallback((e: KeyboardEvent) => {
-    if (editingCell) return;
+    if (!isLoggedIn || editingCell) return;
     const target = e.target as HTMLElement;
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
 
@@ -167,20 +171,20 @@ const App: React.FC = () => {
       e.preventDefault();
       setEditingCell(selection.start);
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      // 核心修复：在这里调用 preventDefault 阻止按键字符流向聚焦后的 Input
       e.preventDefault();
       setEditingCell({ ...selection.start, initialValue: e.key });
     }
-  }, [selection, editingCell, deleteSelection, handleCopy]);
+  }, [selection, editingCell, deleteSelection, handleCopy, isLoggedIn]);
 
   useEffect(() => {
+    if (!isLoggedIn) return;
     window.addEventListener('paste', handlePaste);
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleGlobalKeyDown);
     };
-  }, [handlePaste, handleGlobalKeyDown]);
+  }, [handlePaste, handleGlobalKeyDown, isLoggedIn]);
 
   const filteredRows = useMemo(() => {
     const allRowIndices = Object.keys(currentSheet.rows).map(Number).sort((a, b) => a - b);
@@ -204,7 +208,6 @@ const App: React.FC = () => {
           }
         }
         const evaluatedValue = evaluateCell(actualCell, currentSheet, rIdx);
-        // Fix: Explicitly convert evaluatedValue and filterValue to strings to avoid 'unknown' type issues with toLowerCase()
         return String(evaluatedValue ?? '').toLowerCase().includes(String(filterValue).toLowerCase());
       });
     });
@@ -218,7 +221,6 @@ const App: React.FC = () => {
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
       <head>
         <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>${currentSheet.name}</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
         <style>
           table { border-collapse: collapse; }
           td { border: 0.5pt solid #cccccc; vertical-align: middle; padding: 4px; font-family: 'Segoe UI', Arial; font-size: 10pt; }
@@ -244,7 +246,6 @@ const App: React.FC = () => {
         const rowspanAttr = cell?.rowSpan && cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
         const colspanAttr = cell?.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
         
-        // 构建单元格样式
         const style = cell?.style || {};
         const cssStyle = [
           style.bold ? 'font-weight:bold' : '',
@@ -277,6 +278,11 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('isLoggedIn');
+    setIsLoggedIn(false);
+  };
+
   const handleCellClick = (r: number, colLetter: string, cIdx: number) => {
     if (selection && selection.start.row === r && selection.start.colIndex === cIdx) {
       setEditingCell({ row: r, col: colLetter, colIndex: cIdx });
@@ -305,7 +311,8 @@ const App: React.FC = () => {
       
       for (let i = 0; i < rowsPerOrder; i++) {
         const r = startR + i;
-        const excelR = r + 1;
+        // 核心修复：数据行对应的 Excel 行号从 r + 2 开始 (r=0 为第2行)
+        const excelR = r + 2;
         if (!newRows[r]) newRows[r] = {};
         MAIN_COLUMNS.forEach((colDef, cIdx) => {
           const col = indexToExcelCol(cIdx);
@@ -427,9 +434,20 @@ const App: React.FC = () => {
     updateSheet(prev => ({ ...prev, filters: { ...prev.filters, [colLetter]: value } }));
   };
 
+  if (!isLoggedIn) {
+    return <Login onLogin={() => setIsLoggedIn(true)} />;
+  }
+
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
-      <Header mode={mode} setMode={setMode} onClear={() => updateSheet(prev => createEmptySheet(prev.id, prev.name))} onExport={onExport} />
+      <Header 
+        mode={mode} 
+        setMode={setMode} 
+        onClear={() => updateSheet(prev => createEmptySheet(prev.id, prev.name))} 
+        onExport={onExport}
+        onSettings={() => setIsSettingsOpen(true)}
+        onLogout={handleLogout}
+      />
       
       <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center justify-between">
         <Toolbar 
@@ -469,7 +487,8 @@ const App: React.FC = () => {
           <table className="border-collapse table-fixed w-full text-xs">
             <thead>
               <tr className="bg-slate-50">
-                <th className="w-12 border-b border-r border-slate-300 sticky top-0 left-0 z-30 bg-slate-50 text-[10px] text-slate-400">#</th>
+                {/* 核心修复：表头固定显示序号 1 */}
+                <th className="w-12 border-b border-r border-slate-300 sticky top-0 left-0 z-30 bg-slate-50 text-[10px] text-slate-400">1</th>
                 {currentColumns.map((col, idx) => {
                   const letter = indexToExcelCol(idx);
                   return (
@@ -503,7 +522,8 @@ const App: React.FC = () => {
             <tbody>
               {filteredRows.map((r) => (
                 <tr key={r} className="group hover:bg-slate-50/50">
-                  <td onClick={() => selectWholeRow(r)} className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px] cursor-pointer hover:bg-blue-50 hover:text-blue-600">{r + 1}</td>
+                  {/* 核心修复：数据行显示 r + 2 (对应 Excel 行号) */}
+                  <td onClick={() => selectWholeRow(r)} className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px] cursor-pointer hover:bg-blue-50 hover:text-blue-600">{r + 2}</td>
                   {currentColumns.map((col, cIdx) => {
                     const colLetter = indexToExcelCol(cIdx);
                     const cell = currentSheet.rows[r]?.[colLetter];
@@ -532,7 +552,7 @@ const App: React.FC = () => {
                         {isEditing ? (
                           <input 
                             autoFocus 
-                            className="absolute inset-0 w-full h-full p-1.5 outline-none z-40 border-2 border-blue-600 bg-white" 
+                            className="absolute inset-0 w-full h-full p-1.5 outline-none z-40 border-2 border-blue-600 bg-white text-slate-900" 
                             defaultValue={editingCell.initialValue !== undefined ? editingCell.initialValue : (cell?.formula || (cell?.value !== undefined ? String(cell.value) : ''))} 
                             onBlur={(e) => { handleCellChange(r, colLetter, e.target.value); setEditingCell(null); }} 
                             onKeyDown={(e) => { if (e.key === 'Enter') { handleCellChange(r, colLetter, e.currentTarget.value); setEditingCell(null); } }} 
@@ -557,6 +577,7 @@ const App: React.FC = () => {
         </div>
       )}
       <PasteModal isOpen={isPasteModalOpen} onClose={() => setIsPasteModalOpen(false)} onPaste={handleImport} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
     </div>
   );
 };

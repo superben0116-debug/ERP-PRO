@@ -33,14 +33,16 @@ export const evaluateCell = (
 
   let expr = formula.substring(1).toUpperCase();
   
+  // 核心修复：ROW() 应该返回 Excel 行号，即 rowIdx + 2
   if (expr === 'ROW()') {
-    return rowIdx + 1;
+    return rowIdx + 2;
   }
 
   const cellRefRegex = /([A-Z]+)(\d+)/g;
   
   const processedExpr = expr.replace(cellRefRegex, (match, col, rStr) => {
-    const rIdx = parseInt(rStr) - 1;
+    // 核心修复：Excel 行号 2 对应内部数据索引 0
+    const rIdx = parseInt(rStr) - 2;
     const targetCell = sheet.rows[rIdx]?.[col];
     if (!targetCell) return '0';
     const refKey = `${col}${rIdx}`;
@@ -153,7 +155,6 @@ export const extractAddressDetails = (address: string) => {
     type: 'Residential'
   };
 
-  // Improved Phone Extract
   const phoneMatch = address.match(/(?:电话|Phone|Tel)[:：]?\s*([\d\s+-]+)/i);
   if (phoneMatch) {
     const raw = phoneMatch[1].trim().replace(/^\+1\s*/, '').replace(/[^\d]/g, '');
