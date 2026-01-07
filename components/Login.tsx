@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import { loginAPI } from '../api';
 
 interface LoginProps {
   onLogin: () => void;
