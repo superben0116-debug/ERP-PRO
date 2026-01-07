@@ -120,7 +120,6 @@ const App: React.FC = () => {
     setMainSheet(prev => {
       const newRows = { ...prev.rows };
       
-      // 修正导入起始行：精准探测现有数据最后一行
       let startR = 0;
       const existingIndices = Object.keys(newRows).map(Number).sort((a, b) => a - b);
       if (existingIndices.length > 0) {
@@ -207,19 +206,15 @@ const App: React.FC = () => {
               case 'pickup_date': cell.value = formattedDate; break;
               case 'order_no': cell.value = internalModel; break;
               case 'ref': 
-                // Ref 映射到主表 X 列（单号）
                 cell.value = String(rowData['X']?.value || ''); 
                 break;
               case 'receiver_contact': 
-                // Receiver Contact Name (列 Y) -> 客户地址姓名
                 cell.value = addr.name; 
                 break;
               case 'receiver_phone': 
-                // Receiver Contact Phone (列 Z) -> 客户地址电话
                 cell.value = addr.phone; 
                 break;
               case 'receiver_addr_name': 
-                // Receiver Address Name (列 AB) -> 与 Y 列保持一致
                 cell.value = addr.name; 
                 break;
               case 'receiver_zip': cell.value = addr.zip; break;
@@ -253,7 +248,6 @@ const App: React.FC = () => {
     const tsv = e.clipboardData?.getData('text/plain');
     if (!tsv) return;
 
-    // 如果数据包含制表符或换行符，认为是 Excel/WPS 结构化数据
     if (tsv.includes('\t') || tsv.includes('\n')) {
       e.preventDefault();
       saveHistory();
@@ -276,10 +270,30 @@ const App: React.FC = () => {
     }
   }, [selection, updateSheet, saveHistory]);
 
+  const handleGlobalKeyDown = useCallback((e: KeyboardEvent) => {
+    if (!selection || editingCell) return;
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      deleteSelection();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      setEditingCell(selection.start);
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Start editing with the pressed key
+      setEditingCell(selection.start);
+    }
+  }, [selection, editingCell, deleteSelection]);
+
   useEffect(() => {
     window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
-  }, [handlePaste]);
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('paste', handlePaste);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [handlePaste, handleGlobalKeyDown]);
 
   const handleAutoFill = useCallback(() => {
     if (!selection || !fillRange) return;
@@ -309,72 +323,63 @@ const App: React.FC = () => {
     setFillRange(null);
   }, [selection, fillRange, saveHistory, updateSheet]);
 
-  const handleImageInput = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const base64 = e.target?.result as string;
-      if (selection) {
-        saveHistory();
-        updateSheet(prev => {
-          const newRows = { ...prev.rows };
-          const startR = Math.min(selection.start.row, selection.end.row);
-          const endR = Math.max(selection.start.row, selection.end.row);
-          const startC = Math.min(selection.start.colIndex, selection.end.colIndex);
-          const endC = Math.max(selection.start.colIndex, selection.end.colIndex);
-          for (let r = startR; r <= endR; r++) {
-            if (!newRows[r]) newRows[r] = {};
-            for (let c = startC; c <= endC; c++) {
-              const colLetter = indexToExcelCol(c);
-              newRows[r][colLetter] = { ...newRows[r][colLetter], value: base64 };
-            }
-          }
-          return { ...prev, rows: newRows };
-        });
-      }
-    };
-    reader.readAsDataURL(file);
-  }, [selection, saveHistory, updateSheet]);
-
   const onExport = () => {
-    const headers = currentColumns.map(c => c.label).join(',');
-    const csvRows: string[] = [];
+    // Generate HTML format for Excel to support Merged Cells and formatting
     const rowIndices = Object.keys(currentSheet.rows).map(Number).sort((a, b) => a - b);
     const maxRow = rowIndices.length > 0 ? Math.max(...rowIndices) : 20;
-    
+
+    let html = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>${currentSheet.name}</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+        <style>
+          td { border: 0.5pt solid windowtext; vertical-align: middle; white-space: nowrap; }
+          .header { background-color: #f3f4f6; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead>
+            <tr>
+              ${currentColumns.map(c => `<th class="header">${c.label}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
     for (let r = 0; r <= maxRow; r++) {
-      const rowData = currentColumns.map((_, cIdx) => {
+      html += '<tr>';
+      currentColumns.forEach((_, cIdx) => {
         const letter = indexToExcelCol(cIdx);
-        let cell = currentSheet.rows[r]?.[letter];
+        const cell = currentSheet.rows[r]?.[letter];
         
-        // 合并格补全逻辑：如果当前单元格被隐藏，寻找其所属的合并源单元格
         if (cell?.hidden) {
-          let checkR = r;
-          while (checkR >= 0) {
-            const potential = currentSheet.rows[checkR]?.[letter];
-            if (potential && !potential.hidden) {
-              cell = potential;
-              break;
-            }
-            checkR--;
-          }
+          // If hidden, Excel knows it's part of a span from previous rows
+          return;
+        }
+
+        const val = evaluateCell(cell, currentSheet, r);
+        const rowspanAttr = cell?.rowSpan && cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
+        const colspanAttr = cell?.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
+        
+        let content = String(val ?? '');
+        if (content.startsWith('data:image')) {
+          content = '[IMAGE]'; // Browser security usually blocks base64 in HTML-XLS exports
         }
         
-        const val = evaluateCell(cell, currentSheet, r);
-        const safeVal = typeof val === 'string' && val.startsWith('data:image') 
-          ? '[IMAGE DATA]' 
-          : String(val ?? '').replace(/"/g, '""');
-        return `"${safeVal}"`;
+        html += `<td${rowspanAttr}${colspanAttr}>${content}</td>`;
       });
-      csvRows.push(rowData.join(','));
+      html += '</tr>';
     }
-    
-    // 使用 \uFEFF (BOM) 强制 Excel/WPS 以 UTF-8 方式打开
-    const csvContent = '\uFEFF' + headers + '\n' + csvRows.join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+
+    html += '</tbody></table></body></html>';
+
+    const blob = new Blob(['\ufeff', html], { type: 'application/vnd.ms-excel' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${currentSheet.name}_${new Date().toLocaleDateString()}.csv`;
+    link.download = `${currentSheet.name}_${new Date().toLocaleDateString()}.xls`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -480,6 +485,32 @@ const App: React.FC = () => {
       return { ...prev, rows: newRows };
     });
   };
+
+  const handleImageInput = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64 = e.target?.result as string;
+      if (selection) {
+        saveHistory();
+        updateSheet(prev => {
+          const newRows = { ...prev.rows };
+          const startR = Math.min(selection.start.row, selection.end.row);
+          const endR = Math.max(selection.start.row, selection.end.row);
+          const startC = Math.min(selection.start.colIndex, selection.end.colIndex);
+          const endC = Math.max(selection.start.colIndex, selection.end.colIndex);
+          for (let r = startR; r <= endR; r++) {
+            if (!newRows[r]) newRows[r] = {};
+            for (let c = startC; c <= endC; c++) {
+              const colLetter = indexToExcelCol(c);
+              newRows[r][colLetter] = { ...newRows[r][colLetter], value: base64 };
+            }
+          }
+          return { ...prev, rows: newRows };
+        });
+      }
+    };
+    reader.readAsDataURL(file);
+  }, [selection, saveHistory, updateSheet]);
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">

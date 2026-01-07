@@ -153,10 +153,15 @@ export const extractAddressDetails = (address: string) => {
     type: 'Residential'
   };
 
+  // Improved Phone Extract
   const phoneMatch = address.match(/(?:电话|Phone|Tel)[:：]?\s*([\d\s+-]+)/i);
   if (phoneMatch) {
-    // 清洗电话格式，尝试保留核心数字，如 951 377-0023
-    details.phone = phoneMatch[1].trim().replace(/^\+1\s*/, '');
+    const raw = phoneMatch[1].trim().replace(/^\+1\s*/, '').replace(/[^\d]/g, '');
+    if (raw.length === 10) {
+      details.phone = `${raw.substring(0, 3)} ${raw.substring(3, 6)}-${raw.substring(6)}`;
+    } else {
+      details.phone = phoneMatch[1].trim().replace(/^\+1\s*/, '');
+    }
   }
 
   const zipMatch = address.match(/\b\d{5}(?:-\d{4})?\b/);
@@ -197,7 +202,6 @@ export const extractInternalModel = (productName: string): string => {
 
 export const parseTSV = (text: string): string[][] => {
   if (!text) return [];
-  // WPS/Excel 导出的 TSV 处理引号包裹及换行符
   const rows = text.split(/\r?\n/).filter(line => line.length > 0);
   return rows.map(line => {
     const cells = line.split('\t');
