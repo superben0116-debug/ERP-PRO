@@ -1,0 +1,5 @@
+{
+  "name": "Amazon Order & Trucking Logistics Manager",
+  "description": "A high-performance web-based spreadsheet tool tailored for Amazon sellers. Features include automated Amazon order parsing, advanced cost/profit accounting with Excel-like formulas, and one-click data conversion for trucking logistics (LTL/FTL) systems.",
+  "requestFramePermissions": []
+}
