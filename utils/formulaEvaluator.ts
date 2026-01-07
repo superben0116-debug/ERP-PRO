@@ -65,7 +65,7 @@ const normalizeDate = (dateStr: string): string => {
   const datePattern = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
   const match = dateStr.match(datePattern);
   if (match) {
-    return `${match[1]}年${match[2]}月${match[3]}日`;
+    return `${match[1]}/${match[2].padStart(2, '0')}/${match[3].padStart(2, '0')}`;
   }
   return dateStr;
 };
@@ -154,7 +154,10 @@ export const extractAddressDetails = (address: string) => {
   };
 
   const phoneMatch = address.match(/(?:电话|Phone|Tel)[:：]?\s*([\d\s+-]+)/i);
-  if (phoneMatch) details.phone = phoneMatch[1].trim();
+  if (phoneMatch) {
+    // 清洗电话格式，尝试保留核心数字，如 951 377-0023
+    details.phone = phoneMatch[1].trim().replace(/^\+1\s*/, '');
+  }
 
   const zipMatch = address.match(/\b\d{5}(?:-\d{4})?\b/);
   if (zipMatch) details.zip = zipMatch[0].substring(0, 5);
@@ -194,9 +197,10 @@ export const extractInternalModel = (productName: string): string => {
 
 export const parseTSV = (text: string): string[][] => {
   if (!text) return [];
-  // 更加健壮的 TSV 解析，处理 Excel 复制出来的包含引号的单元格
-  return text.trim().split(/\r?\n/).map(line => {
-    const parts = line.split('\t');
-    return parts.map(p => p.replace(/^"|"$/g, '').replace(/""/g, '"'));
+  // WPS/Excel 导出的 TSV 处理引号包裹及换行符
+  const rows = text.split(/\r?\n/).filter(line => line.length > 0);
+  return rows.map(line => {
+    const cells = line.split('\t');
+    return cells.map(cell => cell.replace(/^"|"$/g, '').replace(/""/g, '"'));
   });
 };
