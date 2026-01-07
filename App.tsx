@@ -9,6 +9,8 @@ import SettingsModal from './components/SettingsModal';
 import Login from './components/Login';
 import { evaluateCell, parseAmazonPaste, extractAddressDetails, indexToExcelCol, excelColToIndex, extractInternalModel, parseTSV } from './utils/formulaEvaluator';
 
+const STORAGE_KEY_MAIN = 'mindego_main_sheet_v1';
+
 const createEmptySheet = (id: string, name: string): SheetData => ({
   id,
   name,
@@ -20,8 +22,23 @@ const createEmptySheet = (id: string, name: string): SheetData => ({
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
-  const [mainSheet, setMainSheet] = useState<SheetData>(() => createEmptySheet('main', '亚马逊订单核算'));
+  
+  // 主表格使用持久化存储
+  const [mainSheet, setMainSheet] = useState<SheetData>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_MAIN);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Failed to load main sheet", e);
+      }
+    }
+    return createEmptySheet('main', '亚马逊订单核算');
+  });
+
+  // 卡派表格仅在内存中，不持久化
   const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
+  
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selection, setSelection] = useState<SelectionRange | null>(null);
@@ -34,6 +51,11 @@ const App: React.FC = () => {
 
   const currentSheet = mode === TableMode.MAIN ? mainSheet : truckSheet;
   const currentColumns = mode === TableMode.MAIN ? MAIN_COLUMNS : TRUCK_COLUMNS;
+
+  // 持久化主表格数据
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
+  }, [mainSheet]);
 
   const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
     if (mode === TableMode.MAIN) setMainSheet(updater);
@@ -311,7 +333,6 @@ const App: React.FC = () => {
       
       for (let i = 0; i < rowsPerOrder; i++) {
         const r = startR + i;
-        // 核心修复：数据行对应的 Excel 行号从 r + 2 开始 (r=0 为第2行)
         const excelR = r + 2;
         if (!newRows[r]) newRows[r] = {};
         MAIN_COLUMNS.forEach((colDef, cIdx) => {
@@ -361,12 +382,27 @@ const App: React.FC = () => {
     saveHistory();
     const today = new Date();
     const formattedDate = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+    
+    // 获取当前主表格的筛选结果索引
+    const mainFilteredIndices = (() => {
+      const allRowIndices = Object.keys(mainSheet.rows).map(Number).sort((a, b) => a - b);
+      if (Object.keys(mainSheet.filters).length === 0) return allRowIndices;
+      return allRowIndices.filter(rIdx => {
+        const row = mainSheet.rows[rIdx];
+        return Object.entries(mainSheet.filters).every(([col, filterValue]) => {
+          if (!filterValue) return true;
+          const evaluatedValue = evaluateCell(row?.[col], mainSheet, rIdx);
+          return String(evaluatedValue ?? '').toLowerCase().includes(String(filterValue).toLowerCase());
+        });
+      });
+    })();
+
     setTruckSheet(prev => {
-      const newTruckRows = { ...prev.rows };
-      Object.entries(mainSheet.rows).forEach(([rStr, rowData]) => {
-        const r = parseInt(rStr);
+      const newTruckRows = {}; // 每次转换重新开始，不存储
+      mainFilteredIndices.forEach((r, truckRIdx) => {
+        const rowData = mainSheet.rows[r];
         if (rowData['K']?.value && !rowData['K']?.hidden) {
-          if (!newTruckRows[r]) newTruckRows[r] = {};
+          if (!newTruckRows[truckRIdx]) newTruckRows[truckRIdx] = {};
           const addr = extractAddressDetails(String(rowData['AV']?.value || ''));
           const internalModel = extractInternalModel(String(rowData['M']?.value || ''));
           TRUCK_COLUMNS.forEach((colDef, cIdx) => {
@@ -389,11 +425,11 @@ const App: React.FC = () => {
               case 'height': cell.value = evaluateCell(rowData['AS'], mainSheet, r); break;
               case 'weight': cell.value = evaluateCell(rowData['AT'], mainSheet, r); break;
             }
-            newTruckRows[r][letter] = cell;
+            newTruckRows[truckRIdx][letter] = cell;
           });
         }
       });
-      return { ...prev, rows: newTruckRows };
+      return { ...prev, rows: newTruckRows, filters: {} }; // 清空卡派筛选
     });
     setMode(TableMode.TRUCK);
   }, [mainSheet, saveHistory]);
@@ -443,7 +479,11 @@ const App: React.FC = () => {
       <Header 
         mode={mode} 
         setMode={setMode} 
-        onClear={() => updateSheet(prev => createEmptySheet(prev.id, prev.name))} 
+        onClear={() => {
+          if (confirm("确定要重置当前表格的所有数据吗？主表格数据一旦重置无法直接恢复。")) {
+            updateSheet(prev => createEmptySheet(prev.id, prev.name));
+          }
+        }} 
         onExport={onExport}
         onSettings={() => setIsSettingsOpen(true)}
         onLogout={handleLogout}
@@ -475,7 +515,10 @@ const App: React.FC = () => {
         />
         <div className="flex gap-2">
           {mode === TableMode.MAIN && (
-            <button onClick={convertToTrucking} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md">一键转为卡派表格</button>
+            <button onClick={convertToTrucking} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+              一键转为卡派表格
+            </button>
           )}
           <button onClick={() => setIsPasteModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md">导入亚马逊数据</button>
         </div>
@@ -487,7 +530,6 @@ const App: React.FC = () => {
           <table className="border-collapse table-fixed w-full text-xs">
             <thead>
               <tr className="bg-slate-50">
-                {/* 核心修复：表头固定显示序号 1 */}
                 <th className="w-12 border-b border-r border-slate-300 sticky top-0 left-0 z-30 bg-slate-50 text-[10px] text-slate-400">1</th>
                 {currentColumns.map((col, idx) => {
                   const letter = indexToExcelCol(idx);
@@ -520,9 +562,8 @@ const App: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((r) => (
+              {filteredRows.map((r, renderIdx) => (
                 <tr key={r} className="group hover:bg-slate-50/50">
-                  {/* 核心修复：数据行显示 r + 2 (对应 Excel 行号) */}
                   <td onClick={() => selectWholeRow(r)} className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px] cursor-pointer hover:bg-blue-50 hover:text-blue-600">{r + 2}</td>
                   {currentColumns.map((col, cIdx) => {
                     const colLetter = indexToExcelCol(cIdx);
@@ -565,6 +606,15 @@ const App: React.FC = () => {
                       </td>
                     );
                   })}
+                </tr>
+              ))}
+              {/* 空行填充，增强 Excel 感 */}
+              {filteredRows.length < 20 && Array.from({ length: 20 - filteredRows.length }).map((_, i) => (
+                <tr key={`empty-${i}`}>
+                   <td className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px]">-</td>
+                   {currentColumns.map((col, cIdx) => (
+                     <td key={cIdx} className="border-b border-r border-slate-200 p-1.5 h-10"></td>
+                   ))}
                 </tr>
               ))}
             </tbody>
