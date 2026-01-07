@@ -23,7 +23,7 @@ const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
   
-  // 主表格使用持久化存储
+  // Persistence for Main Sheet
   const [mainSheet, setMainSheet] = useState<SheetData>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_MAIN);
     if (saved) {
@@ -36,7 +36,7 @@ const App: React.FC = () => {
     return createEmptySheet('main', '亚马逊订单核算');
   });
 
-  // 卡派表格仅在内存中，不持久化
+  // Trucking Sheet is memory-only, not persisted
   const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
   
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
@@ -52,7 +52,7 @@ const App: React.FC = () => {
   const currentSheet = mode === TableMode.MAIN ? mainSheet : truckSheet;
   const currentColumns = mode === TableMode.MAIN ? MAIN_COLUMNS : TRUCK_COLUMNS;
 
-  // 持久化主表格数据
+  // Persist main sheet whenever it changes
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
   }, [mainSheet]);
@@ -333,7 +333,7 @@ const App: React.FC = () => {
       
       for (let i = 0; i < rowsPerOrder; i++) {
         const r = startR + i;
-        const excelR = r + 2;
+        const excelR = r + 2; // Data rows start at 2 in Excel reference
         if (!newRows[r]) newRows[r] = {};
         MAIN_COLUMNS.forEach((colDef, cIdx) => {
           const col = indexToExcelCol(cIdx);
@@ -383,7 +383,7 @@ const App: React.FC = () => {
     const today = new Date();
     const formattedDate = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
     
-    // 获取当前主表格的筛选结果索引
+    // Convert only filtered rows from Main Sheet
     const mainFilteredIndices = (() => {
       const allRowIndices = Object.keys(mainSheet.rows).map(Number).sort((a, b) => a - b);
       if (Object.keys(mainSheet.filters).length === 0) return allRowIndices;
@@ -398,7 +398,7 @@ const App: React.FC = () => {
     })();
 
     setTruckSheet(prev => {
-      const newTruckRows = {}; // 每次转换重新开始，不存储
+      const newTruckRows: Record<number, Record<string, CellMetadata>> = {}; 
       mainFilteredIndices.forEach((r, truckRIdx) => {
         const rowData = mainSheet.rows[r];
         if (rowData['K']?.value && !rowData['K']?.hidden) {
@@ -429,7 +429,7 @@ const App: React.FC = () => {
           });
         }
       });
-      return { ...prev, rows: newTruckRows, filters: {} }; // 清空卡派筛选
+      return { ...prev, rows: newTruckRows, filters: {} }; 
     });
     setMode(TableMode.TRUCK);
   }, [mainSheet, saveHistory]);
@@ -608,7 +608,7 @@ const App: React.FC = () => {
                   })}
                 </tr>
               ))}
-              {/* 空行填充，增强 Excel 感 */}
+              {/* Empty rows to maintain table look */}
               {filteredRows.length < 20 && Array.from({ length: 20 - filteredRows.length }).map((_, i) => (
                 <tr key={`empty-${i}`}>
                    <td className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px]">-</td>

@@ -1,5 +1,5 @@
+
 import React, { useState } from 'react';
-import { loginAPI } from '../api';
 
 interface LoginProps {
   onLogin: () => void;
@@ -9,23 +9,16 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    setLoading(true);
-
-    try {
-      const result = await loginAPI(username, password);
+    const storedPassword = localStorage.getItem('userPassword') || 'Dayou123!';
+    
+    if (username === 'dayou' && password === storedPassword) {
       localStorage.setItem('isLoggedIn', 'true');
-      localStorage.setItem('userId', result.id);
-      localStorage.setItem('username', result.username);
       onLogin();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败，请检查用户名和密码');
-    } finally {
-      setLoading(false);
+    } else {
+      setError('用户名或密码错误');
     }
   };
 
@@ -51,7 +44,6 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               placeholder="请输入账号"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              disabled={loading}
               required
             />
           </div>
@@ -63,7 +55,6 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               placeholder="请输入密码"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
               required
             />
           </div>
@@ -72,16 +63,11 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full py-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white rounded-xl font-bold shadow-xl transition-all active:scale-95"
+            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-xl transition-all active:scale-95"
           >
-            {loading ? '登录中...' : '登录系统'}
+            登录系统
           </button>
         </form>
-
-        <p className="text-center text-xs text-slate-500 mt-4">
-          默认账号: dayou | 密码: Dayou123?
-        </p>
       </div>
     </div>
   );
