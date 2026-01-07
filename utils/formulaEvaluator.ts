@@ -33,7 +33,6 @@ export const evaluateCell = (
 
   let expr = formula.substring(1).toUpperCase();
   
-  // Handle ROW() formula
   if (expr === 'ROW()') {
     return rowIdx + 1;
   }
@@ -195,5 +194,9 @@ export const extractInternalModel = (productName: string): string => {
 
 export const parseTSV = (text: string): string[][] => {
   if (!text) return [];
-  return text.trim().split(/\r?\n/).map(line => line.split('\t'));
+  // 更加健壮的 TSV 解析，处理 Excel 复制出来的包含引号的单元格
+  return text.trim().split(/\r?\n/).map(line => {
+    const parts = line.split('\t');
+    return parts.map(p => p.replace(/^"|"$/g, '').replace(/""/g, '"'));
+  });
 };

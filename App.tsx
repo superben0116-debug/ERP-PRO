@@ -1,5 +1,4 @@
-
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { SheetData, GridCell, SelectionRange, CellStyle, TableMode, CellMetadata } from './types';
 import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants';
 import Header from './components/Header';
@@ -26,10 +25,18 @@ const App: React.FC = () => {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isDraggingFill, setIsDraggingFill] = useState(false);
   const [fillRange, setFillRange] = useState<SelectionRange | null>(null);
+  const [activeFilterCol, setActiveFilterCol] = useState<{col: string, index: number} | null>(null);
+  const [filterSearch, setFilterSearch] = useState("");
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentSheet = mode === TableMode.MAIN ? mainSheet : truckSheet;
   const currentColumns = mode === TableMode.MAIN ? MAIN_COLUMNS : TRUCK_COLUMNS;
+
+  const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
+    if (mode === TableMode.MAIN) setMainSheet(updater);
+    else setTruckSheet(updater);
+  }, [mode]);
 
   const saveHistory = useCallback(() => {
     setHistory(prev => [[{...mainSheet}, {...truckSheet}], ...prev.slice(0, 19)]);
@@ -43,11 +50,6 @@ const App: React.FC = () => {
       setHistory(h => h.slice(1));
     }
   }, [history]);
-
-  const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
-    if (mode === TableMode.MAIN) setMainSheet(updater);
-    else setTruckSheet(updater);
-  }, [mode]);
 
   const handleCellChange = (row: number, colLetter: string, value: string) => {
     saveHistory();
@@ -88,8 +90,39 @@ const App: React.FC = () => {
     });
   };
 
+  // 批量删除行
+  const deleteSelectedRows = useCallback(() => {
+    if (!selection) return;
+    saveHistory();
+    updateSheet(prev => {
+      const startR = Math.min(selection.start.row, selection.end.row);
+      const endR = Math.max(selection.start.row, selection.end.row);
+      const count = endR - startR + 1;
+      const newRows: Record<number, Record<string, CellMetadata>> = {};
+      
+      // Fix: Cast rowData to fix 'unknown' type error in Record mapping
+      Object.entries(prev.rows).forEach(([rStr, rowData]) => {
+        const r = parseInt(rStr);
+        const typedRowData = rowData as Record<string, CellMetadata>;
+        if (r < startR) {
+          newRows[r] = typedRowData;
+        } else if (r > endR) {
+          newRows[r - count] = typedRowData;
+        }
+      });
+      return { ...prev, rows: newRows };
+    });
+    setSelection(null);
+  }, [selection, saveHistory, updateSheet]);
+
   const deleteSelection = useCallback(() => {
     if (!selection) return;
+    // 如果是选择了整行，则执行删除行逻辑
+    if (selection.start.colIndex === 0 && selection.end.colIndex === currentColumns.length - 1) {
+      deleteSelectedRows();
+      return;
+    }
+
     saveHistory();
     updateSheet(prev => {
       const newRows = { ...prev.rows };
@@ -108,7 +141,7 @@ const App: React.FC = () => {
       }
       return { ...prev, rows: newRows };
     });
-  }, [selection, saveHistory, updateSheet]);
+  }, [selection, currentColumns.length, saveHistory, updateSheet, deleteSelectedRows]);
 
   const compressImage = (file: File): Promise<string> => {
     return new Promise((resolve) => {
@@ -156,17 +189,14 @@ const App: React.FC = () => {
       const endR = Math.max(selection.start.row, selection.end.row);
       const startC = Math.min(selection.start.colIndex, selection.end.colIndex);
       const endC = Math.max(selection.start.colIndex, selection.end.colIndex);
-
       const fillStartR = fillRange.start.row;
       const fillEndR = fillRange.end.row;
-
       for (let cIdx = startC; cIdx <= endC; cIdx++) {
         const colLetter = indexToExcelCol(cIdx);
         const values = [];
         for (let r = startR; r <= endR; r++) {
           values.push(newRows[r]?.[colLetter]);
         }
-
         const isNumeric = values.every(v => v?.value !== undefined && v?.value !== '' && !isNaN(Number(v.value)));
         let step = 0;
         if (isNumeric && values.length >= 2) {
@@ -174,14 +204,11 @@ const App: React.FC = () => {
         } else if (isNumeric && values.length === 1) {
           step = 1;
         }
-
         for (let r = fillStartR; r <= fillEndR; r++) {
           if (r >= startR && r <= endR) continue;
           if (!newRows[r]) newRows[r] = {};
-          
           const sourceIdx = (r - startR) % values.length;
           const sourceCell = values[sourceIdx < 0 ? sourceIdx + values.length : sourceIdx];
-
           if (isNumeric && sourceCell?.value !== undefined) {
             const baseVal = Number(values[values.length - 1]?.value || 0);
             const dist = r > endR ? (r - endR) : (r - startR);
@@ -200,7 +227,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (editingCell || isPasteModalOpen) return;
+      if (editingCell || isPasteModalOpen || activeFilterCol) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (!selection) return;
         deleteSelection();
@@ -211,14 +238,43 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editingCell, selection, deleteSelection, isPasteModalOpen]);
+  }, [editingCell, selection, deleteSelection, isPasteModalOpen, activeFilterCol]);
 
   useEffect(() => {
     const handleGlobalPaste = async (e: ClipboardEvent) => {
-      // 关键修复：如果当前焦点在文本区域或输入框中，不执行表格粘贴逻辑
       const target = e.target as HTMLElement;
       if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || editingCell || !selection) return;
       
+      const tsvData = e.clipboardData?.getData('text');
+      
+      // 优先处理文本，防止文字被识别为图片
+      if (tsvData && (tsvData.includes('\t') || tsvData.includes('\n') || tsvData.trim().length > 0)) {
+        // 如果剪切板中有 TSV 格式数据，优先进行单元格填充
+        if (tsvData.includes('\t') || tsvData.includes('\n')) {
+          e.preventDefault();
+          saveHistory();
+          const matrix = parseTSV(tsvData);
+          if (matrix.length > 0) {
+            updateSheet(prev => {
+              const newRows = { ...prev.rows };
+              const startR = selection.start.row;
+              const startColIdx = selection.start.colIndex;
+              matrix.forEach((row, ri) => {
+                const targetR = startR + ri;
+                if (!newRows[targetR]) newRows[targetR] = {};
+                row.forEach((val, ci) => {
+                  const targetCol = indexToExcelCol(startColIdx + ci);
+                  newRows[targetR][targetCol] = { ...newRows[targetR][targetCol], value: val.trim() };
+                });
+              });
+              return { ...prev, rows: newRows };
+            });
+          }
+          return;
+        }
+      }
+
+      // 如果没有文字或文字很短，检查是否为图片
       const items = e.clipboardData?.items;
       if (items) {
         for (const item of Array.from(items)) {
@@ -233,29 +289,6 @@ const App: React.FC = () => {
           }
         }
       }
-
-      const tsvData = e.clipboardData?.getData('text');
-      if (!tsvData) return;
-      
-      const matrix = parseTSV(tsvData);
-      if (matrix.length > 0 && (matrix.length > 1 || matrix[0].length > 1)) {
-        e.preventDefault();
-        saveHistory();
-        updateSheet(prev => {
-          const newRows = { ...prev.rows };
-          const startR = selection.start.row;
-          const startColIdx = selection.start.colIndex;
-          matrix.forEach((row, ri) => {
-            const targetR = startR + ri;
-            if (!newRows[targetR]) newRows[targetR] = {};
-            row.forEach((val, ci) => {
-              const targetCol = indexToExcelCol(startColIdx + ci);
-              newRows[targetR][targetCol] = { value: val.trim() };
-            });
-          });
-          return { ...prev, rows: newRows };
-        });
-      }
     };
     window.addEventListener('paste', handleGlobalPaste);
     return () => window.removeEventListener('paste', handleGlobalPaste);
@@ -267,8 +300,11 @@ const App: React.FC = () => {
     setMainSheet(prev => {
       const newRows = { ...prev.rows };
       let startR = 0;
-      // 找到第一个空行开始导入
-      while (newRows[startR] && (newRows[startR]['A']?.value || newRows[startR]['K']?.value)) startR++;
+      // 精准寻找第一个完全空闲的可用行开始导入，解决“导入不显示”或被覆盖问题
+      const rowIndices = Object.keys(newRows).map(Number).sort((a,b) => a-b);
+      if (rowIndices.length > 0) {
+        startR = Math.max(...rowIndices) + 1;
+      }
       
       let maxSerial = 0;
       Object.values(newRows).forEach(row => {
@@ -276,28 +312,22 @@ const App: React.FC = () => {
         if (!isNaN(val)) maxSerial = Math.max(maxSerial, val);
       });
       const nextSerial = maxSerial + 1;
-
-      // 定义需要跨行合并的列
       const mergedCols = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','Y','AH','AI','AJ','AK','AL','AV','AY','AZ','BA','BB','BC','BD','BE','BF','BG','BH','BI','BJ','BK','BL','BM','BN','BO','BP','BQ','BR','BS'];
-
+      
       for (let i = 0; i < rowsPerOrder; i++) {
         const r = startR + i;
         const excelR = r + 1;
         if (!newRows[r]) newRows[r] = {};
-        
         MAIN_COLUMNS.forEach((colDef, cIdx) => {
           const col = indexToExcelCol(cIdx);
           const cell: CellMetadata = { value: '', style: { color: '#000000' } };
-          
           const isMerged = mergedCols.includes(col);
           if (isMerged && i > 0) {
             cell.hidden = true;
           } else {
             if (isMerged && i === 0) cell.rowSpan = rowsPerOrder;
-
-            // 数据映射
             if (col === 'A' && i === 0) cell.value = nextSerial;
-            if (col === 'B' && i === 0) cell.value = new Date().toLocaleDateString(); // 默认当前日期作为出单日
+            if (col === 'B' && i === 0) cell.value = new Date().toLocaleDateString();
             if (col === 'K' && i === 0) cell.value = data.order_id;
             if (col === 'M' && i === 0) cell.value = data.product_name;
             if (col === 'E' && i === 0) cell.value = data.inch_size;
@@ -308,14 +338,10 @@ const App: React.FC = () => {
             if (col === 'AV' && i === 0) { cell.value = data.full_address; cell.style = { wrapText: true }; }
             if (col === 'BK' && i === 0) cell.value = data.ship_date;
             if (col === 'BL' && i === 0) cell.value = data.delivery_date;
-
-            // 尾程信息
             if (i === rowsPerOrder - 1) {
               if (col === 'AW') cell.value = data.fedex_method;
               if (col === 'AX') cell.value = data.tracking_num.join(', ');
             }
-
-            // 核心公式映射
             if (col === 'Q') cell.formula = `=O${excelR}*P${excelR}`;
             if (col === 'AG') cell.formula = `=AE${excelR}*AF${excelR}`;
             if (col === 'AL') {
@@ -336,6 +362,8 @@ const App: React.FC = () => {
       return { ...prev, rows: newRows };
     });
     setMode(TableMode.MAIN);
+    // 导入后清空筛选，确保新导入数据立即可见
+    updateSheet(prev => ({ ...prev, filters: {} }));
   };
 
   const convertToTrucking = useCallback(() => {
@@ -397,12 +425,14 @@ const App: React.FC = () => {
         const letter = indexToExcelCol(cIdx);
         const cell = currentSheet.rows[r]?.[letter];
         const val = evaluateCell(cell, currentSheet, r);
-        return `"${String(val ?? '').replace(/"/g, '""')}"`;
+        const safeVal = String(val ?? '').replace(/"/g, '""');
+        return `"${safeVal}"`;
       });
       csvRows.push(rowData.join(','));
     }
 
-    const blob = new Blob([[headers, ...csvRows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const csvContent = '\uFEFF' + headers + '\n' + csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -410,6 +440,105 @@ const App: React.FC = () => {
     link.click();
     URL.revokeObjectURL(url);
   };
+
+  // 筛选逻辑
+  const filteredRows = useMemo(() => {
+    const filters = currentSheet.filters;
+    const allRowIndices = Object.keys(currentSheet.rows).map(Number).sort((a,b) => a-b);
+    if (Object.keys(filters).length === 0) return allRowIndices;
+
+    return allRowIndices.filter(rIdx => {
+      const row = currentSheet.rows[rIdx];
+      return Object.entries(filters).every(([col, filterVal]) => {
+        if (!filterVal) return true;
+        const cell = row[col];
+        let actualCell = cell;
+        if (cell?.hidden) {
+          let checkIdx = rIdx;
+          while (checkIdx >= 0) {
+            const potential = currentSheet.rows[checkIdx]?.[col];
+            if (potential && !potential.hidden) {
+              actualCell = potential;
+              break;
+            }
+            checkIdx--;
+          }
+        }
+        const val = String(evaluateCell(actualCell, currentSheet, rIdx) || "").toLowerCase();
+        const selectedValues = (filterVal as string).split('|||');
+        return selectedValues.some(sv => val.includes(sv.toLowerCase()));
+      });
+    });
+  }, [currentSheet.rows, currentSheet.filters]);
+
+  const getRowRange = () => {
+    const allRows = Object.keys(currentSheet.rows).map(Number);
+    const max = allRows.length > 0 ? Math.max(...allRows) : 100;
+    return Math.max(max + 50, 200);
+  };
+
+  const handleToggleFilterValue = (colLetter: string, value: string) => {
+    updateSheet(prev => {
+      const currentFilter = prev.filters[colLetter] || "";
+      const selected = currentFilter ? currentFilter.split('|||') : [];
+      let nextSelected;
+      if (selected.includes(value)) {
+        nextSelected = selected.filter(v => v !== value);
+      } else {
+        nextSelected = [...selected, value];
+      }
+      return {
+        ...prev,
+        filters: { ...prev.filters, [colLetter]: nextSelected.join('|||') }
+      };
+    });
+  };
+
+  const clearFilter = (colLetter: string) => {
+    updateSheet(prev => {
+      const newFilters = { ...prev.filters };
+      delete newFilters[colLetter];
+      return { ...prev, filters: newFilters };
+    });
+  };
+
+  const selectWholeRow = (r: number) => {
+    setSelection({
+      start: { row: r, col: indexToExcelCol(0), colIndex: 0 },
+      end: { row: r, col: indexToExcelCol(currentColumns.length - 1), colIndex: currentColumns.length - 1 }
+    });
+  };
+
+  const selectWholeColumn = (cIdx: number) => {
+    const maxR = getRowRange();
+    setSelection({
+      start: { row: 0, col: indexToExcelCol(cIdx), colIndex: cIdx },
+      end: { row: maxR - 1, col: indexToExcelCol(cIdx), colIndex: cIdx }
+    });
+  };
+
+  // Fix: Implement getUniqueValues function for the filtering popover
+  const getUniqueValues = useCallback((colLetter: string) => {
+    const values = new Set<string>();
+    Object.entries(currentSheet.rows).forEach(([rStr, row]) => {
+      const rIdx = parseInt(rStr);
+      let cell = row[colLetter];
+      if (cell?.hidden) {
+        let checkIdx = rIdx;
+        while (checkIdx >= 0) {
+          const potential = currentSheet.rows[checkIdx]?.[colLetter];
+          if (potential && !potential.hidden) {
+            cell = potential;
+            break;
+          }
+          checkIdx--;
+        }
+      }
+      const val = String(evaluateCell(cell, currentSheet, rIdx) || "");
+      if (val) values.add(val);
+    });
+    return Array.from(values).sort();
+  }, [currentSheet]);
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
@@ -465,25 +594,84 @@ const App: React.FC = () => {
           <table className="border-collapse table-fixed w-full text-xs">
             <thead>
               <tr className="bg-slate-50">
-                <th className="w-12 border-b border-r border-slate-300 sticky top-0 left-0 z-30 bg-slate-50 text-[10px] text-slate-400">#</th>
-                {currentColumns.map((col, idx) => (
-                  <th 
-                    key={col.id} 
-                    style={{ width: col.width }} 
-                    className="border-b border-r border-slate-200 p-2 font-bold text-slate-600 sticky top-0 z-20 bg-slate-50 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]"
-                  >
-                    <div className="flex flex-col items-center">
-                      <span className="text-[9px] text-blue-500 uppercase tracking-tighter opacity-70 mb-0.5">{indexToExcelCol(idx)}</span>
-                      <span className="truncate w-full text-center">{col.label}</span>
-                    </div>
-                  </th>
-                ))}
+                <th className="w-12 border-b border-r border-slate-300 sticky top-0 left-0 z-30 bg-slate-50 text-[10px] text-slate-400 cursor-pointer hover:bg-slate-200">#</th>
+                {currentColumns.map((col, idx) => {
+                  const colLetter = indexToExcelCol(idx);
+                  const isFiltered = !!currentSheet.filters[colLetter];
+                  return (
+                    <th 
+                      key={col.id} 
+                      style={{ width: col.width }} 
+                      onClick={() => selectWholeColumn(idx)}
+                      className={`border-b border-r border-slate-200 p-2 font-bold text-slate-600 sticky top-0 z-20 bg-slate-50 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)] group hover:bg-slate-100 cursor-pointer transition-colors`}
+                    >
+                      <div className="flex flex-col items-center relative">
+                        <div className="flex items-center justify-center w-full gap-1">
+                          <span className="text-[9px] text-blue-500 uppercase tracking-tighter opacity-70">{colLetter}</span>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveFilterCol(activeFilterCol?.col === colLetter ? null : {col: colLetter, index: idx});
+                              setFilterSearch("");
+                            }}
+                            className={`p-1 rounded hover:bg-blue-100 transition-colors ${isFiltered ? 'text-blue-600' : 'text-slate-400 opacity-0 group-hover:opacity-100'}`}
+                          >
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z" clipRule="evenodd" />
+                            </svg>
+                          </button>
+                        </div>
+                        <span className="truncate w-full text-center px-1">{col.label}</span>
+
+                        {activeFilterCol?.col === colLetter && (
+                          <div onClick={e => e.stopPropagation()} className="absolute top-full mt-1 left-0 w-48 bg-white border border-slate-200 shadow-2xl rounded-lg z-[100] p-2 text-left animate-in fade-in slide-in-from-top-1 duration-200">
+                            <div className="flex flex-col gap-2">
+                              <input 
+                                autoFocus
+                                type="text" 
+                                placeholder="搜索值..." 
+                                className="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-blue-500"
+                                value={filterSearch}
+                                onChange={(e) => setFilterSearch(e.target.value)}
+                              />
+                              <div className="max-h-48 overflow-auto flex flex-col gap-1 py-1 border-t border-b border-slate-100">
+                                {getUniqueValues(colLetter)
+                                  .filter(val => val.toLowerCase().includes(filterSearch.toLowerCase()))
+                                  .map(val => {
+                                    const isSelected = (currentSheet.filters[colLetter] || "").split('|||').includes(val);
+                                    return (
+                                      <label key={val} className="flex items-center gap-2 hover:bg-slate-50 p-1 rounded cursor-pointer transition-colors">
+                                        <input 
+                                          type="checkbox" 
+                                          checked={isSelected} 
+                                          onChange={() => handleToggleFilterValue(colLetter, val)}
+                                          className="rounded text-blue-600 focus:ring-blue-500 h-3 w-3"
+                                        />
+                                        <span className="text-xs text-slate-700 truncate">{val}</span>
+                                      </label>
+                                    );
+                                  })}
+                              </div>
+                              <div className="flex justify-between items-center px-1 mt-1">
+                                <button onClick={() => clearFilter(colLetter)} className="text-[10px] text-blue-600 font-bold hover:underline">清空筛选</button>
+                                <button onClick={() => setActiveFilterCol(null)} className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 font-bold">确定</button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
-              {Array.from({ length: 300 }).map((_, r) => (
+              {(filteredRows.length > 0 ? filteredRows : Array.from({ length: getRowRange() }).map((_,i)=>i)).map((r) => (
                 <tr key={r} className="group hover:bg-slate-50/50">
-                  <td className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px]">
+                  <td 
+                    onClick={() => selectWholeRow(r)}
+                    className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px] cursor-pointer hover:bg-slate-200 hover:text-blue-600 transition-colors"
+                  >
                     {r + 1}
                   </td>
                   {currentColumns.map((col, cIdx) => {
@@ -565,7 +753,7 @@ const App: React.FC = () => {
                           />
                         ) : (
                           <div className={`flex items-center h-full overflow-hidden ${cell?.style?.wrapText ? 'whitespace-normal' : 'whitespace-nowrap'}`}>
-                            {(isImageColumn || isDataImage) && val && String(val).startsWith('data:image') ? (
+                            {isDataImage || (isImageColumn && val && String(val).startsWith('data:')) ? (
                               <img 
                                 src={String(val)} 
                                 alt="" 
@@ -614,6 +802,8 @@ const App: React.FC = () => {
           <span className="flex items-center gap-1">
             <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" /> SYSTEM ONLINE
           </span>
+          <span className="text-slate-300">|</span>
+          <span className="text-slate-500">ROWS: {filteredRows.length} / {Object.keys(currentSheet.rows).length}</span>
         </div>
         <div className="flex items-center gap-6">
             <span className="text-slate-600 font-bold">SHEET: <span className="text-blue-600">{currentSheet.name}</span></span>
