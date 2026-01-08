@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { SheetData, GridCell, SelectionRange, CellStyle, TableMode, CellMetadata } from './types.ts';
 import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants.tsx';
@@ -10,6 +9,50 @@ import Login from './components/Login.tsx';
 import { evaluateCell, parseAmazonPaste, extractAddressDetails, indexToExcelCol, extractInternalModel, parseTSV } from './utils/formulaEvaluator.ts';
 
 const STORAGE_KEY_MAIN = 'mindego_main_sheet_v1';
+const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8080';
+
+// ==================== API 函数 ====================
+
+// 保存表格数据到后端
+const saveSheetToBackend = async (sheetData: SheetData) => {
+  try {
+    const response = await fetch(`${API_URL}/api/sheet/save`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sheetData })
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to save sheet:', response.statusText);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('Error saving sheet:', err);
+    return false;
+  }
+};
+
+// 从后端加载表格数据
+const loadSheetFromBackend = async (): Promise<SheetData | null> => {
+  try {
+    const response = await fetch(`${API_URL}/api/sheet/load`);
+    if (!response.ok) {
+      console.error('Failed to load sheet:', response.statusText);
+      return null;
+    }
+    
+    const data = await response.json();
+    return data.data;
+  } catch (err) {
+    console.error('Error loading sheet:', err);
+    return null;
+  }
+};
+
+// ==================== 辅助函数 ====================
 
 const createEmptySheet = (id: string, name: string): SheetData => ({
   id,
@@ -19,9 +62,13 @@ const createEmptySheet = (id: string, name: string): SheetData => ({
   filters: {},
 });
 
+// ==================== 主组件 ====================
+
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
+  const [isLoadingFromBackend, setIsLoadingFromBackend] = useState(false);
+  const [lastSaveTime, setLastSaveTime] = useState<number>(0);
   
   const [mainSheet, setMainSheet] = useState<SheetData>(() => {
     const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
@@ -68,11 +115,51 @@ const App: React.FC = () => {
   const currentSheet = mode === TableMode.MAIN ? mainSheet : truckSheet;
   const currentColumns = mode === TableMode.MAIN ? MAIN_COLUMNS : TRUCK_COLUMNS;
 
+  // ==================== 数据同步 Effects ====================
+
+  // 登录后从后端加载数据
   useEffect(() => {
-    if (isLoggedIn) {
-      localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
+    if (isLoggedIn && !isLoadingFromBackend) {
+      setIsLoadingFromBackend(true);
+      loadSheetFromBackend().then(backendData => {
+        if (backendData && backendData.rows && Object.keys(backendData.rows).length > 0) {
+          console.log('Loaded data from backend');
+          setMainSheet(prev => ({
+            ...prev,
+            rows: backendData.rows || prev.rows,
+            columnWidths: backendData.columnWidths || prev.columnWidths,
+            filters: backendData.filters || prev.filters
+          }));
+        }
+        setIsLoadingFromBackend(false);
+      });
     }
-  }, [mainSheet, isLoggedIn]);
+  }, [isLoggedIn]);
+
+  // 保存到本地存储和后端（防抖处理）
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    // 保存到本地存储
+    localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
+
+    // 防抖：每2秒最多保存一次到后端
+    const now = Date.now();
+    if (now - lastSaveTime > 2000) {
+      saveSheetToBackend(mainSheet);
+      setLastSaveTime(now);
+    } else {
+      // 设置定时器在2秒后保存
+      const timer = setTimeout(() => {
+        saveSheetToBackend(mainSheet);
+        setLastSaveTime(Date.now());
+      }, 2000 - (now - lastSaveTime));
+      
+      return () => clearTimeout(timer);
+    }
+  }, [mainSheet, isLoggedIn, lastSaveTime]);
+
+  // ==================== 工具函数 ====================
 
   const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
     if (mode === TableMode.MAIN) setMainSheet(updater);
@@ -348,6 +435,7 @@ const App: React.FC = () => {
 
   const handleLogout = () => {
     localStorage.removeItem('isLoggedIn');
+    localStorage.removeItem('user');
     setIsLoggedIn(false);
   };
 
@@ -631,7 +719,6 @@ const App: React.FC = () => {
 
                         {activeFilterCol?.col === letter && (
                           <div className="absolute top-full left-0 w-64 bg-white shadow-2xl border border-slate-200 z-[100] rounded-xl mt-1 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
-                            {/* 排序区域 */}
                             <div className="p-2 border-b bg-slate-50 flex gap-1">
                               <button onClick={() => setSort(letter, 'asc')} className="flex-1 py-1.5 text-[10px] bg-white border border-slate-200 rounded hover:bg-blue-50 hover:text-blue-600 font-bold flex items-center justify-center gap-1 transition-colors">
                                 升序 A-Z
@@ -641,7 +728,6 @@ const App: React.FC = () => {
                               </button>
                             </div>
 
-                            {/* 搜索框 */}
                             <div className="p-2 border-b">
                               <div className="relative">
                                 <input 
@@ -657,7 +743,6 @@ const App: React.FC = () => {
                               </div>
                             </div>
 
-                            {/* 值列表 */}
                             <div className="max-h-56 overflow-y-auto p-2 space-y-0.5 scrollbar-thin">
                               <label className="flex items-center gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer transition-colors group">
                                 <input 
@@ -683,7 +768,6 @@ const App: React.FC = () => {
                                 ))}
                             </div>
 
-                            {/* 底部操作 */}
                             <div className="p-2 border-t bg-slate-50 flex justify-between items-center">
                               <button onClick={() => clearFilter(letter)} className="text-[10px] text-red-500 hover:text-red-600 font-bold px-2 py-1 rounded transition-colors">清除全部</button>
                               <button onClick={() => setActiveFilterCol(null)} className="bg-blue-600 text-white text-[10px] font-bold px-4 py-1.5 rounded-lg shadow-sm hover:bg-blue-700 transition-all active:scale-95">确定</button>
