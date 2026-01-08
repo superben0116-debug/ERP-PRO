@@ -21,15 +21,39 @@ const createEmptySheet = (id: string, name: string): SheetData => ({
 
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
-    return {
-      ...defaultSheet,
-      ...parsed,
-      rows: parsed.rows || {},
-      columnWidths: parsed.columnWidths || {},
-      filters: sanitizedFilters
-    };
-  } catch (e) {
-    console.error("加载主表数据失败:", e);
+  
+  const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
+
+  const [mainSheet, setMainSheet] = useState<SheetData>(() => {
+    const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
+    const saved = localStorage.getItem(STORAGE_KEY_MAIN);
+    if (!saved) return defaultSheet;
+    try {
+      const parsed = JSON.parse(saved);
+      if (!parsed || typeof parsed !== 'object') return defaultSheet;
+
+      const rawFilters = parsed.filters || {};
+      const sanitizedFilters: Record<string, string[]> = {};
+      Object.entries(rawFilters).forEach(([key, val]) => {
+        if (Array.isArray(val)) {
+          sanitizedFilters[key] = val;
+        }
+      });
+
+      return {
+        ...defaultSheet,
+        ...parsed,
+        rows: parsed.rows || {},
+        columnWidths: parsed.columnWidths || {},
+        filters: sanitizedFilters
+      };
+    } catch (e) {
+      console.error("加载主表数据失败:", e);
+      return defaultSheet;
+    }
+  });
+  
+  // ... 其他代码
 
     const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
 
