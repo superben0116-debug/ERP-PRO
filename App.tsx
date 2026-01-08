@@ -1,4 +1,4 @@
-
+import { saveSheetAPI, loadSheetAPI } from './api';
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { SheetData, GridCell, SelectionRange, CellStyle, TableMode, CellMetadata } from './types.ts';
 import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants.tsx';
@@ -24,6 +24,33 @@ const App: React.FC = () => {
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
   
   const [mainSheet, setMainSheet] = useState<SheetData>(() => {
+  const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
+  const saved = localStorage.getItem(STORAGE_KEY_MAIN);
+  if (!saved) return defaultSheet;
+  try {
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== 'object') return defaultSheet;
+
+    const rawFilters = parsed.filters || {};
+    const sanitizedFilters: Record<string, string[]> = {};
+    Object.entries(rawFilters).forEach(([key, val]) => {
+      if (Array.isArray(val)) {
+        sanitizedFilters[key] = val;
+      }
+    });
+
+    return {
+      ...defaultSheet,
+      ...parsed,
+      rows: parsed.rows || {},
+      columnWidths: parsed.columnWidths || {},
+      filters: sanitizedFilters
+    };
+  } catch (e) {
+    console.error("加载主表数据失败:", e);
+    return defaultSheet;
+  }
+});
     const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
     const saved = localStorage.getItem(STORAGE_KEY_MAIN);
     if (!saved) return defaultSheet;
@@ -69,10 +96,23 @@ const App: React.FC = () => {
   const currentColumns = mode === TableMode.MAIN ? MAIN_COLUMNS : TRUCK_COLUMNS;
 
   useEffect(() => {
-    if (isLoggedIn) {
-      localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
-    }
-  }, [mainSheet, isLoggedIn]);
+  if (isLoggedIn) {
+    localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
+    // 同时保存到后端
+    saveSheetAPI(mainSheet).catch(err => console.error('Failed to save to backend:', err));
+  }
+}, [mainSheet, isLoggedIn]);
+
+// 登录时从后端加载数据
+useEffect(() => {
+  if (isLoggedIn) {
+    loadSheetAPI().then(result => {
+      if (result.data) {
+        setMainSheet(result.data);
+      }
+    }).catch(err => console.error('Failed to load from backend:', err));
+  }
+}, [isLoggedIn]);
 
   const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
     if (mode === TableMode.MAIN) setMainSheet(updater);
