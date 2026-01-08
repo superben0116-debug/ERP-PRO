@@ -1,5 +1,5 @@
 // API 服务层 - 处理所有后端 API 调用
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://erp-backend.preview.tencent-zeabur.cn';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 // 登录接口
 export const loginAPI = async (username: string, password: string) => {
