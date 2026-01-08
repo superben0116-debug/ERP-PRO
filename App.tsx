@@ -1,4 +1,4 @@
-import { saveSheetAPI, loadSheetAPI } from './api';
+
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { SheetData, GridCell, SelectionRange, CellStyle, TableMode, CellMetadata } from './types.ts';
 import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants.tsx';
@@ -21,9 +21,8 @@ const createEmptySheet = (id: string, name: string): SheetData => ({
 
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
-  
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
-
+  
   const [mainSheet, setMainSheet] = useState<SheetData>(() => {
     const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
     const saved = localStorage.getItem(STORAGE_KEY_MAIN);
@@ -54,7 +53,7 @@ const App: React.FC = () => {
   });
 
   const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
-
+  
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selection, setSelection] = useState<SelectionRange | null>(null);
@@ -63,7 +62,7 @@ const App: React.FC = () => {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [activeFilterCol, setActiveFilterCol] = useState<{col: string, index: number} | null>(null);
   const [filterSearch, setFilterSearch] = useState('');
-
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentSheet = mode === TableMode.MAIN ? mainSheet : truckSheet;
@@ -72,19 +71,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (isLoggedIn) {
       localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
-      saveSheetAPI(mainSheet).catch(err => console.error('Failed to save to backend:', err));
     }
   }, [mainSheet, isLoggedIn]);
-
-  useEffect(() => {
-    if (isLoggedIn) {
-      loadSheetAPI().then(result => {
-        if (result.data) {
-          setMainSheet(result.data);
-        }
-      }).catch(err => console.error('Failed to load from backend:', err));
-    }
-  }, [isLoggedIn]);
 
   const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
     if (mode === TableMode.MAIN) setMainSheet(updater);
@@ -643,6 +631,7 @@ const App: React.FC = () => {
 
                         {activeFilterCol?.col === letter && (
                           <div className="absolute top-full left-0 w-64 bg-white shadow-2xl border border-slate-200 z-[100] rounded-xl mt-1 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                            {/* 排序区域 */}
                             <div className="p-2 border-b bg-slate-50 flex gap-1">
                               <button onClick={() => setSort(letter, 'asc')} className="flex-1 py-1.5 text-[10px] bg-white border border-slate-200 rounded hover:bg-blue-50 hover:text-blue-600 font-bold flex items-center justify-center gap-1 transition-colors">
                                 升序 A-Z
@@ -652,6 +641,7 @@ const App: React.FC = () => {
                               </button>
                             </div>
 
+                            {/* 搜索框 */}
                             <div className="p-2 border-b">
                               <div className="relative">
                                 <input 
@@ -667,6 +657,7 @@ const App: React.FC = () => {
                               </div>
                             </div>
 
+                            {/* 值列表 */}
                             <div className="max-h-56 overflow-y-auto p-2 space-y-0.5 scrollbar-thin">
                               <label className="flex items-center gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer transition-colors group">
                                 <input 
@@ -689,10 +680,10 @@ const App: React.FC = () => {
                                     />
                                     <span className="text-[11px] text-slate-600 group-hover:text-slate-900 truncate" title={val}>{val || '(空白)'}</span>
                                   </label>
-                                ))
-                              }
+                                ))}
                             </div>
 
+                            {/* 底部操作 */}
                             <div className="p-2 border-t bg-slate-50 flex justify-between items-center">
                               <button onClick={() => clearFilter(letter)} className="text-[10px] text-red-500 hover:text-red-600 font-bold px-2 py-1 rounded transition-colors">清除全部</button>
                               <button onClick={() => setActiveFilterCol(null)} className="bg-blue-600 text-white text-[10px] font-bold px-4 py-1.5 rounded-lg shadow-sm hover:bg-blue-700 transition-all active:scale-95">确定</button>
