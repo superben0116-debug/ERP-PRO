@@ -75,11 +75,12 @@ const App: React.FC = () => {
       };
     } catch (e) {
       console.error("加载主表数据失败:", e);
-      return defaultSheet;
-    }
-  });
+     const [defaultSheet, setDefaultSheet] = useState<SheetData>(() => {
+  // ... 一些逻辑
+  return defaultSheet;
+}); // ← 确保这里有分号
 
-  const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
+const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
   
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
