@@ -21,24 +21,6 @@ const createEmptySheet = (id: string, name: string): SheetData => ({
 
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
-  const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
-  
-  const [mainSheet, setMainSheet] = useState<SheetData>(() => {
-  const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
-  const saved = localStorage.getItem(STORAGE_KEY_MAIN);
-  if (!saved) return defaultSheet;
-  try {
-    const parsed = JSON.parse(saved);
-    if (!parsed || typeof parsed !== 'object') return defaultSheet;
-
-    const rawFilters = parsed.filters || {};
-    const sanitizedFilters: Record<string, string[]> = {};
-    Object.entries(rawFilters).forEach(([key, val]) => {
-      if (Array.isArray(val)) {
-        sanitizedFilters[key] = val;
-      }
-    });
-
     return {
       ...defaultSheet,
       ...parsed,
