@@ -39,7 +39,11 @@ export interface SheetData {
   name: string;
   rows: Record<number, Record<string, CellMetadata>>;
   columnWidths: Record<string, number>;
-  filters: Record<string, string>; // 存储每列的过滤关键词
+  filters: Record<string, string[]>; // Changed to string[] for multiple selections
+  sort?: {
+    col: string;
+    direction: 'asc' | 'desc';
+  };
 }
 
 export interface GridCell {

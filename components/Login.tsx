@@ -1,5 +1,5 @@
 
-import { loginAPI } from '../api';
+import React, { useState } from 'react';
 
 interface LoginProps {
   onLogin: () => void;
@@ -31,7 +31,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
           </div>
-          <h2 className="text-2xl font-black text-slate-800">阿春来了</h2>
+          <h2 className="text-2xl font-black text-slate-800">MINDEGO</h2>
           <p className="text-slate-500 text-sm mt-1">Amazon Order Management System</p>
         </div>
 

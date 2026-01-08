@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { CellStyle } from '../types';
+import { CellStyle } from '../types.ts';
 
 interface ToolbarProps {
   onFormatChange: (style: Partial<CellStyle>) => void;
@@ -83,7 +83,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
             </div>
           </IconButton>
           {activeMenu === 'color' && (
-            <div className="grid grid-cols-5 gap-1 absolute top-full left-0 bg-white border border-slate-200 p-2 shadow-2xl z-[110] rounded-xl w-36">
+            <div className="grid grid-cols-5 gap-1 absolute top-full left-0 bg-white border-border border-slate-200 p-2 shadow-2xl z-[110] rounded-xl w-36">
               {colors.map(c => (
                 <button 
                   key={c} 

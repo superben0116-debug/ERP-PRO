@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { TableMode } from '../types';
+import { TableMode } from '../types.ts';
 
 interface HeaderProps {
   mode: TableMode;

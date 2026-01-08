@@ -1,13 +1,13 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { SheetData, GridCell, SelectionRange, CellStyle, TableMode, CellMetadata } from './types';
-import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants';
-import Header from './components/Header';
-import Toolbar from './components/Toolbar';
-import PasteModal from './components/PasteModal';
-import SettingsModal from './components/SettingsModal';
-import Login from './components/Login';
-import { evaluateCell, parseAmazonPaste, extractAddressDetails, indexToExcelCol, excelColToIndex, extractInternalModel, parseTSV } from './utils/formulaEvaluator';
+import { SheetData, GridCell, SelectionRange, CellStyle, TableMode, CellMetadata } from './types.ts';
+import { MAIN_COLUMNS, TRUCK_COLUMNS } from './constants.tsx';
+import Header from './components/Header.tsx';
+import Toolbar from './components/Toolbar.tsx';
+import PasteModal from './components/PasteModal.tsx';
+import SettingsModal from './components/SettingsModal.tsx';
+import Login from './components/Login.tsx';
+import { evaluateCell, parseAmazonPaste, extractAddressDetails, indexToExcelCol, extractInternalModel, parseTSV } from './utils/formulaEvaluator.ts';
 
 const STORAGE_KEY_MAIN = 'mindego_main_sheet_v1';
 
@@ -23,20 +23,35 @@ const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [mode, setMode] = useState<TableMode>(TableMode.MAIN);
   
-  // Persistence for Main Sheet
   const [mainSheet, setMainSheet] = useState<SheetData>(() => {
+    const defaultSheet = createEmptySheet('main', '亚马逊订单核算');
     const saved = localStorage.getItem(STORAGE_KEY_MAIN);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to load main sheet", e);
-      }
+    if (!saved) return defaultSheet;
+    try {
+      const parsed = JSON.parse(saved);
+      if (!parsed || typeof parsed !== 'object') return defaultSheet;
+
+      const rawFilters = parsed.filters || {};
+      const sanitizedFilters: Record<string, string[]> = {};
+      Object.entries(rawFilters).forEach(([key, val]) => {
+        if (Array.isArray(val)) {
+          sanitizedFilters[key] = val;
+        }
+      });
+
+      return {
+        ...defaultSheet,
+        ...parsed,
+        rows: parsed.rows || {},
+        columnWidths: parsed.columnWidths || {},
+        filters: sanitizedFilters
+      };
+    } catch (e) {
+      console.error("加载主表数据失败:", e);
+      return defaultSheet;
     }
-    return createEmptySheet('main', '亚马逊订单核算');
   });
 
-  // Trucking Sheet is memory-only, not persisted
   const [truckSheet, setTruckSheet] = useState<SheetData>(() => createEmptySheet('truck', '卡派系统转换'));
   
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
@@ -46,16 +61,18 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<SheetData[][]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [activeFilterCol, setActiveFilterCol] = useState<{col: string, index: number} | null>(null);
+  const [filterSearch, setFilterSearch] = useState('');
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentSheet = mode === TableMode.MAIN ? mainSheet : truckSheet;
   const currentColumns = mode === TableMode.MAIN ? MAIN_COLUMNS : TRUCK_COLUMNS;
 
-  // Persist main sheet whenever it changes
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
-  }, [mainSheet]);
+    if (isLoggedIn) {
+      localStorage.setItem(STORAGE_KEY_MAIN, JSON.stringify(mainSheet));
+    }
+  }, [mainSheet, isLoggedIn]);
 
   const updateSheet = useCallback((updater: (prev: SheetData) => SheetData) => {
     if (mode === TableMode.MAIN) setMainSheet(updater);
@@ -209,14 +226,32 @@ const App: React.FC = () => {
   }, [handlePaste, handleGlobalKeyDown, isLoggedIn]);
 
   const filteredRows = useMemo(() => {
-    const allRowIndices = Object.keys(currentSheet.rows).map(Number).sort((a, b) => a - b);
-    if (Object.keys(currentSheet.filters).length === 0) return allRowIndices;
+    const applySort = (indices: number[]) => {
+      if (currentSheet.sort) {
+        const { col, direction } = currentSheet.sort;
+        return [...indices].sort((a, b) => {
+          const valA = evaluateCell(currentSheet.rows[a]?.[col], currentSheet, a);
+          const valB = evaluateCell(currentSheet.rows[b]?.[col], currentSheet, b);
+          if (valA === valB) return 0;
+          const res = (valA ?? '') > (valB ?? '') ? 1 : -1;
+          return direction === 'asc' ? res : -res;
+        });
+      }
+      return indices;
+    };
 
-    return allRowIndices.filter(rIdx => {
+    let allRowIndices = Object.keys(currentSheet.rows).map(Number).sort((a, b) => a - b);
+    
+    if (!currentSheet.filters || Object.keys(currentSheet.filters).length === 0) {
+      return applySort(allRowIndices);
+    }
+
+    const result = allRowIndices.filter(rIdx => {
       const row = currentSheet.rows[rIdx];
-      return Object.entries(currentSheet.filters).every(([col, filterValue]) => {
-        if (!filterValue) return true;
-        const cell = row ? row[col] : undefined;
+      if (!row) return false;
+      return (Object.entries(currentSheet.filters) as [string, string[]][]).every(([col, selectedValues]) => {
+        if (!selectedValues || selectedValues.length === 0) return true;
+        const cell = row[col];
         let actualCell = cell;
         if (cell?.hidden) {
           let checkIdx = rIdx;
@@ -229,16 +264,27 @@ const App: React.FC = () => {
             checkIdx--;
           }
         }
-        const evaluatedValue = evaluateCell(actualCell, currentSheet, rIdx);
-        return String(evaluatedValue ?? '').toLowerCase().includes(String(filterValue).toLowerCase());
+        const evaluatedValue = String(evaluateCell(actualCell, currentSheet, rIdx) ?? '');
+        return selectedValues.includes(evaluatedValue);
       });
     });
-  }, [currentSheet.rows, currentSheet.filters]);
+
+    return applySort(result);
+  }, [currentSheet.rows, currentSheet.filters, currentSheet.sort]);
+
+  const getUniqueValues = (colLetter: string) => {
+    const values = new Set<string>();
+    Object.keys(currentSheet.rows).forEach(rIdx => {
+      const r = parseInt(rIdx);
+      const cell = currentSheet.rows[r][colLetter];
+      if (cell && cell.hidden) return;
+      values.add(String(evaluateCell(cell, currentSheet, r) ?? ''));
+    });
+    return Array.from(values).sort();
+  };
 
   const onExport = () => {
-    const rowIndices = Object.keys(currentSheet.rows).map(Number).sort((a, b) => a - b);
-    const maxRow = rowIndices.length > 0 ? Math.max(...rowIndices) : 20;
-
+    const rowIndices = filteredRows;
     let html = `
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
       <head>
@@ -257,7 +303,7 @@ const App: React.FC = () => {
           <tbody>
     `;
 
-    for (let r = 0; r <= maxRow; r++) {
+    rowIndices.forEach(r => {
       html += '<tr>';
       currentColumns.forEach((col, cIdx) => {
         const letter = indexToExcelCol(cIdx);
@@ -288,7 +334,7 @@ const App: React.FC = () => {
         html += `<td${rowspanAttr}${colspanAttr}${formulaAttr} style="${cssStyle}">${content}</td>`;
       });
       html += '</tr>';
-    }
+    });
     html += '</tbody></table></body></html>';
 
     const blob = new Blob(['\ufeff', html], { type: 'application/vnd.ms-excel' });
@@ -333,7 +379,7 @@ const App: React.FC = () => {
       
       for (let i = 0; i < rowsPerOrder; i++) {
         const r = startR + i;
-        const excelR = r + 2; // Data rows start at 2 in Excel reference
+        const excelR = r + 2; 
         if (!newRows[r]) newRows[r] = {};
         MAIN_COLUMNS.forEach((colDef, cIdx) => {
           const col = indexToExcelCol(cIdx);
@@ -383,25 +429,11 @@ const App: React.FC = () => {
     const today = new Date();
     const formattedDate = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
     
-    // Convert only filtered rows from Main Sheet
-    const mainFilteredIndices = (() => {
-      const allRowIndices = Object.keys(mainSheet.rows).map(Number).sort((a, b) => a - b);
-      if (Object.keys(mainSheet.filters).length === 0) return allRowIndices;
-      return allRowIndices.filter(rIdx => {
-        const row = mainSheet.rows[rIdx];
-        return Object.entries(mainSheet.filters).every(([col, filterValue]) => {
-          if (!filterValue) return true;
-          const evaluatedValue = evaluateCell(row?.[col], mainSheet, rIdx);
-          return String(evaluatedValue ?? '').toLowerCase().includes(String(filterValue).toLowerCase());
-        });
-      });
-    })();
-
     setTruckSheet(prev => {
       const newTruckRows: Record<number, Record<string, CellMetadata>> = {}; 
-      mainFilteredIndices.forEach((r, truckRIdx) => {
+      filteredRows.forEach((r, truckRIdx) => {
         const rowData = mainSheet.rows[r];
-        if (rowData['K']?.value && !rowData['K']?.hidden) {
+        if (rowData && rowData['K']?.value && !rowData['K']?.hidden) {
           if (!newTruckRows[truckRIdx]) newTruckRows[truckRIdx] = {};
           const addr = extractAddressDetails(String(rowData['AV']?.value || ''));
           const internalModel = extractInternalModel(String(rowData['M']?.value || ''));
@@ -432,7 +464,58 @@ const App: React.FC = () => {
       return { ...prev, rows: newTruckRows, filters: {} }; 
     });
     setMode(TableMode.TRUCK);
-  }, [mainSheet, saveHistory]);
+  }, [mainSheet, filteredRows, saveHistory]);
+
+  const toggleValueFilter = (colLetter: string, value: string) => {
+    updateSheet(prev => {
+      const currentFilters = prev.filters[colLetter] || [];
+      const newFilters = currentFilters.includes(value)
+        ? currentFilters.filter(v => v !== value)
+        : [...currentFilters, value];
+      
+      const nextFilters = { ...prev.filters };
+      if (newFilters.length === 0) delete nextFilters[colLetter];
+      else nextFilters[colLetter] = newFilters;
+      
+      return { ...prev, filters: nextFilters };
+    });
+  };
+
+  const selectAllFilter = (colLetter: string, values: string[]) => {
+    updateSheet(prev => {
+      const nextFilters = { ...prev.filters };
+      delete nextFilters[colLetter];
+      return { ...prev, filters: nextFilters };
+    });
+  };
+
+  const clearFilter = (colLetter: string) => {
+    updateSheet(prev => {
+      const nextFilters = { ...prev.filters };
+      delete nextFilters[colLetter];
+      return { ...prev, filters: nextFilters };
+    });
+  };
+
+  const setSort = (colLetter: string, direction: 'asc' | 'desc') => {
+    updateSheet(prev => ({ ...prev, sort: { col: colLetter, direction } }));
+    setActiveFilterCol(null);
+  };
+
+  const selectWholeRow = (r: number) => {
+    setSelection({
+      start: { row: r, col: 'A', colIndex: 0 },
+      end: { row: r, col: indexToExcelCol(currentColumns.length - 1), colIndex: currentColumns.length - 1 }
+    });
+  };
+
+  const selectWholeColumn = (cIdx: number) => {
+    const maxR = filteredRows.length > 0 ? Math.max(...filteredRows) : 100;
+    setSelection({
+      start: { row: 0, col: indexToExcelCol(cIdx), colIndex: cIdx },
+      end: { row: maxR, col: indexToExcelCol(cIdx), colIndex: cIdx }
+    });
+  };
 
   const handleImageInput = useCallback((file: File) => {
     if (!selection) return;
@@ -450,25 +533,6 @@ const App: React.FC = () => {
     };
     reader.readAsDataURL(file);
   }, [selection, updateSheet, saveHistory]);
-
-  const selectWholeRow = (r: number) => {
-    setSelection({
-      start: { row: r, col: 'A', colIndex: 0 },
-      end: { row: r, col: indexToExcelCol(currentColumns.length - 1), colIndex: currentColumns.length - 1 }
-    });
-  };
-
-  const selectWholeColumn = (cIdx: number) => {
-    const maxR = filteredRows.length > 0 ? Math.max(...filteredRows) : 100;
-    setSelection({
-      start: { row: 0, col: indexToExcelCol(cIdx), colIndex: cIdx },
-      end: { row: maxR, col: indexToExcelCol(cIdx), colIndex: cIdx }
-    });
-  };
-
-  const updateFilter = (colLetter: string, value: string) => {
-    updateSheet(prev => ({ ...prev, filters: { ...prev.filters, [colLetter]: value } }));
-  };
 
   if (!isLoggedIn) {
     return <Login onLogin={() => setIsLoggedIn(true)} />;
@@ -533,26 +597,97 @@ const App: React.FC = () => {
                 <th className="w-12 border-b border-r border-slate-300 sticky top-0 left-0 z-30 bg-slate-50 text-[10px] text-slate-400">1</th>
                 {currentColumns.map((col, idx) => {
                   const letter = indexToExcelCol(idx);
+                  const isFiltered = !!(currentSheet.filters && currentSheet.filters[letter]);
+                  const isSorted = currentSheet.sort?.col === letter;
+
                   return (
                     <th key={col.id} style={{ width: col.width }} className="border-b border-r border-slate-200 p-2 font-bold text-slate-600 sticky top-0 z-20 bg-slate-50 group">
                       <div className="flex flex-col">
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-[9px] text-blue-500 cursor-pointer hover:underline" onClick={() => selectWholeColumn(idx)}>{letter}</span>
-                          <button onClick={() => setActiveFilterCol(activeFilterCol?.col === letter ? null : { col: letter, index: idx })} className={`p-0.5 rounded ${currentSheet.filters[letter] ? 'text-blue-600' : 'text-slate-300'}`}>
-                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z"/></svg>
+                          <button 
+                            onClick={() => {
+                              if (activeFilterCol?.col === letter) setActiveFilterCol(null);
+                              else {
+                                setActiveFilterCol({ col: letter, index: idx });
+                                setFilterSearch('');
+                              }
+                            }} 
+                            className={`p-0.5 rounded transition-colors ${isFiltered ? 'text-blue-600 bg-blue-50' : 'text-slate-300 hover:text-slate-600 hover:bg-slate-100'}`}
+                          >
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z"/>
+                            </svg>
                           </button>
                         </div>
-                        <span className="truncate">{col.label}</span>
+                        <div className="flex items-center gap-1 truncate">
+                          <span className="truncate">{col.label}</span>
+                          {isSorted && (
+                            <span className="text-blue-500">
+                              {currentSheet.sort?.direction === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
+                        </div>
+
                         {activeFilterCol?.col === letter && (
-                          <div className="absolute top-full left-0 w-40 bg-white shadow-2xl border border-slate-200 p-2 z-[60] rounded-lg mt-1">
-                            <input 
-                              autoFocus 
-                              className="w-full px-2 py-1 border border-slate-200 rounded text-[11px] mb-2 outline-none focus:ring-1 focus:ring-blue-500" 
-                              placeholder="搜索..."
-                              value={currentSheet.filters[letter] || ''}
-                              onChange={(e) => updateFilter(letter, e.target.value)}
-                            />
-                            <button onClick={() => { updateFilter(letter, ''); setActiveFilterCol(null); }} className="w-full py-1 text-[10px] text-red-500 hover:bg-red-50 font-bold rounded">清除筛选</button>
+                          <div className="absolute top-full left-0 w-64 bg-white shadow-2xl border border-slate-200 z-[100] rounded-xl mt-1 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                            {/* 排序区域 */}
+                            <div className="p-2 border-b bg-slate-50 flex gap-1">
+                              <button onClick={() => setSort(letter, 'asc')} className="flex-1 py-1.5 text-[10px] bg-white border border-slate-200 rounded hover:bg-blue-50 hover:text-blue-600 font-bold flex items-center justify-center gap-1 transition-colors">
+                                升序 A-Z
+                              </button>
+                              <button onClick={() => setSort(letter, 'desc')} className="flex-1 py-1.5 text-[10px] bg-white border border-slate-200 rounded hover:bg-blue-50 hover:text-blue-600 font-bold flex items-center justify-center gap-1 transition-colors">
+                                降序 Z-A
+                              </button>
+                            </div>
+
+                            {/* 搜索框 */}
+                            <div className="p-2 border-b">
+                              <div className="relative">
+                                <input 
+                                  autoFocus 
+                                  className="w-full pl-7 pr-2 py-1.5 border border-slate-200 rounded-lg text-[11px] outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" 
+                                  placeholder="搜索筛选值..."
+                                  value={filterSearch}
+                                  onChange={(e) => setFilterSearch(e.target.value)}
+                                />
+                                <svg className="w-3 h-3 absolute left-2.5 top-2.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                              </div>
+                            </div>
+
+                            {/* 值列表 */}
+                            <div className="max-h-56 overflow-y-auto p-2 space-y-0.5 scrollbar-thin">
+                              <label className="flex items-center gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer transition-colors group">
+                                <input 
+                                  type="checkbox" 
+                                  className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
+                                  checked={!currentSheet.filters || !currentSheet.filters[letter]}
+                                  onChange={() => selectAllFilter(letter, getUniqueValues(letter))}
+                                />
+                                <span className="text-[11px] font-bold text-slate-700 group-hover:text-blue-600 transition-colors">(全选)</span>
+                              </label>
+                              {getUniqueValues(letter)
+                                .filter(v => v.toLowerCase().includes(filterSearch.toLowerCase()))
+                                .map((val, vIdx) => (
+                                  <label key={vIdx} className="flex items-center gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer transition-colors group">
+                                    <input 
+                                      type="checkbox" 
+                                      className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
+                                      checked={!currentSheet.filters || !currentSheet.filters[letter] || currentSheet.filters[letter].includes(val)}
+                                      onChange={() => toggleValueFilter(letter, val)}
+                                    />
+                                    <span className="text-[11px] text-slate-600 group-hover:text-slate-900 truncate" title={val}>{val || '(空白)'}</span>
+                                  </label>
+                                ))}
+                            </div>
+
+                            {/* 底部操作 */}
+                            <div className="p-2 border-t bg-slate-50 flex justify-between items-center">
+                              <button onClick={() => clearFilter(letter)} className="text-[10px] text-red-500 hover:text-red-600 font-bold px-2 py-1 rounded transition-colors">清除全部</button>
+                              <button onClick={() => setActiveFilterCol(null)} className="bg-blue-600 text-white text-[10px] font-bold px-4 py-1.5 rounded-lg shadow-sm hover:bg-blue-700 transition-all active:scale-95">确定</button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -562,7 +697,7 @@ const App: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((r, renderIdx) => (
+              {filteredRows.map((r) => (
                 <tr key={r} className="group hover:bg-slate-50/50">
                   <td onClick={() => selectWholeRow(r)} className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px] cursor-pointer hover:bg-blue-50 hover:text-blue-600">{r + 2}</td>
                   {currentColumns.map((col, cIdx) => {
@@ -575,9 +710,14 @@ const App: React.FC = () => {
                     
                     const cellStyle = cell?.style || {};
                     const inlineStyle: React.CSSProperties = {
-                      ...cellStyle,
-                      backgroundColor: isSelected ? '#eff6ff' : cellStyle.backgroundColor,
+                      fontWeight: cellStyle.bold ? 'bold' : 'normal',
+                      fontStyle: cellStyle.italic ? 'italic' : 'normal',
+                      textDecoration: cellStyle.underline ? 'underline' : 'none',
+                      color: cellStyle.color,
+                      backgroundColor: isSelected ? '#eff6ff' : (cellStyle.backgroundColor || 'transparent'),
                       textAlign: cellStyle.textAlign || (col.type === 'number' ? 'right' : 'left'),
+                      whiteSpace: cellStyle.wrapText ? 'normal' : 'nowrap',
+                      fontSize: cellStyle.fontSize ? `${cellStyle.fontSize}px` : undefined,
                     };
 
                     return (
@@ -599,7 +739,7 @@ const App: React.FC = () => {
                             onKeyDown={(e) => { if (e.key === 'Enter') { handleCellChange(r, colLetter, e.currentTarget.value); setEditingCell(null); } }} 
                           />
                         ) : (
-                          <div className={`flex items-center h-full overflow-hidden ${cellStyle.wrapText ? 'whitespace-normal' : 'whitespace-nowrap'}`}>
+                          <div className={`flex items-center h-full overflow-hidden`}>
                             {typeof val === 'string' && val.startsWith('data:image') ? <img src={val} alt="" className="h-full w-auto object-contain mx-auto" onClick={() => setPreviewImage(val)} /> : <span className="w-full text-slate-700 truncate">{val}</span>}
                           </div>
                         )}
@@ -608,7 +748,6 @@ const App: React.FC = () => {
                   })}
                 </tr>
               ))}
-              {/* Empty rows to maintain table look */}
               {filteredRows.length < 20 && Array.from({ length: 20 - filteredRows.length }).map((_, i) => (
                 <tr key={`empty-${i}`}>
                    <td className="bg-slate-50 border-b border-r border-slate-300 text-center font-bold text-slate-400 sticky left-0 z-10 text-[10px]">-</td>

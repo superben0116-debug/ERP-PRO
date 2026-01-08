@@ -1,5 +1,5 @@
 
-import { CellMetadata, SheetData } from '../types';
+import { CellMetadata, SheetData } from '../types.ts';
 
 export const indexToExcelCol = (index: number): string => {
   let colName = '';
@@ -33,7 +33,6 @@ export const evaluateCell = (
 
   let expr = formula.substring(1).toUpperCase();
   
-  // 核心修复：ROW() 应该返回 Excel 行号，即 rowIdx + 2
   if (expr === 'ROW()') {
     return rowIdx + 2;
   }
@@ -41,7 +40,6 @@ export const evaluateCell = (
   const cellRefRegex = /([A-Z]+)(\d+)/g;
   
   const processedExpr = expr.replace(cellRefRegex, (match, col, rStr) => {
-    // 核心修复：Excel 行号 2 对应内部数据索引 0
     const rIdx = parseInt(rStr) - 2;
     const targetCell = sheet.rows[rIdx]?.[col];
     if (!targetCell) return '0';
